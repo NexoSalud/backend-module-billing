@@ -1,16 +1,14 @@
-FROM eclipse-temurin:17-jdk-jammy
-
-RUN apt-get update && apt-get install -y maven && rm -rf /var/lib/apt/lists/*
-
+FROM maven:3.9.6-eclipse-temurin-17-alpine AS build
 WORKDIR /app
 
 COPY pom.xml .
-RUN mvn dependency:go-offline
+RUN mvn dependency:go-offline -q
 
+ARG DEPLOY_VERSION=1
 COPY src ./src
+RUN mvn clean package -DskipTests -q
 
-RUN mvn clean package -DskipTests
-
-EXPOSE 8087
-
-ENTRYPOINT ["java", "-jar", "target/billing-service-0.0.1-SNAPSHOT.jar"]
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
