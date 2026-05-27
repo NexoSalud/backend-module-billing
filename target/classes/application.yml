@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: billing-service
+  r2dbc:
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://localhost:5432/nexosalud}
+    username: ${SPRING_R2DBC_USERNAME:postgres}
+    password: ${SPRING_R2DBC_PASSWORD:postgres}
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+server:
+  port: ${BILLING_PORT:8087}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+# URLs de servicios internos para consultas cross-service
+services:
+  users-url: ${USERS_SERVICE_URL:http://localhost:8081}
+  appointments-url: ${APPOINTMENTS_SERVICE_URL:http://localhost:8084}
+  history-url: ${HISTORY_TEMPLATE_SERVICE_URL:http://localhost:8085}
