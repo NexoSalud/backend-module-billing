@@ -18,40 +18,32 @@ public class MedicalOrderController {
     private final MedicalOrderService orderService;
 
     /**
-     * Obtiene todas las órdenes pendientes de recaudo para un paciente.
-     * Incluye liquidación automática si se provee régimen y categoría.
+     * Órdenes pendientes de recaudo con liquidación automática.
+     * RN-02: en consulta externa el recaudo ocurre antes de la atención.
      *
-     * GET /api/v1/billing/orders/pending?patientId=1&regimen=CONTRIBUTIVO&categoria=B
+     * GET /api/v1/billing/orders/pending
+     *   ?patientId=1&regimen=CONTRIBUTIVO&rolAfiliado=BENEFICIARIO&categoria=B
      */
     @GetMapping("/pending")
     public Flux<MedicalOrderResponse> getPending(
             @RequestParam Long patientId,
             @RequestParam(required = false) String regimen,
+            @RequestParam(required = false, defaultValue = "COTIZANTE") String rolAfiliado,
             @RequestParam(required = false, defaultValue = "B") String categoria) {
-        return orderService.getPendingOrdersByPatient(patientId, regimen, categoria);
+        return orderService.getPendingOrdersByPatient(patientId, regimen, rolAfiliado, categoria);
     }
 
-    /**
-     * Todas las órdenes de un paciente (cualquier estado).
-     */
     @GetMapping
     public Flux<MedicalOrderResponse> getByPatient(@RequestParam Long patientId) {
         return orderService.getAllOrdersByPatient(patientId);
     }
 
-    /**
-     * Crea una nueva orden médica (desde Historia Clínica o manualmente).
-     */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Mono<MedicalOrderResponse> create(@Valid @RequestBody CreateMedicalOrderRequest req) {
         return orderService.createOrder(req);
     }
 
-    /**
-     * Actualiza el estado de una orden.
-     * PATCH /api/v1/billing/orders/{id}/status?status=ANULADO
-     */
     @PatchMapping("/{id}/status")
     public Mono<MedicalOrderResponse> updateStatus(
             @PathVariable Long id,

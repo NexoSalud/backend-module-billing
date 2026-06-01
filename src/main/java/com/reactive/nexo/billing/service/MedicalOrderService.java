@@ -1,7 +1,6 @@
 package com.reactive.nexo.billing.service;
 
 import com.reactive.nexo.billing.dto.CreateMedicalOrderRequest;
-import com.reactive.nexo.billing.dto.LiquidacionResponse;
 import com.reactive.nexo.billing.dto.MedicalOrderResponse;
 import com.reactive.nexo.billing.entity.MedicalOrder;
 import com.reactive.nexo.billing.repository.CupsTarifaRepository;
@@ -24,12 +23,14 @@ public class MedicalOrderService {
     private final LiquidacionService liquidacionService;
 
     /**
-     * Obtiene todas las órdenes médicas pendientes de recaudo para un paciente.
-     * Incluye citas del día + órdenes activas de Historia Clínica.
+     * Obtiene órdenes pendientes de recaudo para un paciente.
+     * Enriquece con liquidación automática si se provee régimen, rol y categoría.
+     * RN-02: en consulta externa el recaudo ocurre antes de la atención.
      */
-    public Flux<MedicalOrderResponse> getPendingOrdersByPatient(Long patientId, String regimen, String categoria) {
+    public Flux<MedicalOrderResponse> getPendingOrdersByPatient(
+            Long patientId, String regimen, String rolAfiliado, String categoria) {
         return orderRepository.findPendingByPatient(patientId)
-                .flatMap(order -> enrichWithLiquidacion(order, regimen, categoria));
+                .flatMap(order -> enrichWithLiquidacion(order, regimen, rolAfiliado, categoria));
     }
 
     public Flux<MedicalOrderResponse> getAllOrdersByPatient(Long patientId) {
@@ -43,18 +44,24 @@ public class MedicalOrderService {
                         .cupsCode(req.getCupsCode())
                         .descripcion(req.getCupsDescription())
                         .tarifaIss2001(req.getBaseTariff() != null ? req.getBaseTariff() : BigDecimal.ZERO)
+                        .esPyd(false)
                         .build())
                 .flatMap(tarifa -> {
                     MedicalOrder order = MedicalOrder.builder()
                             .patientId(req.getPatientId())
                             .professionalId(req.getProfessionalId())
                             .appointmentId(req.getAppointmentId())
+                            .episodioId(req.getEpisodioId())
                             .cupsCode(req.getCupsCode())
-                            .cupsDescription(req.getCupsDescription() != null ? req.getCupsDescription() : tarifa.getDescripcion())
+                            .cupsDescription(req.getCupsDescription() != null
+                                    ? req.getCupsDescription() : tarifa.getDescripcion())
                             .serviceType(req.getServiceType())
                             .ambito(req.getAmbito() != null ? req.getAmbito() : "AMBULATORIO")
-                            .baseTariff(req.getBaseTariff() != null ? req.getBaseTariff() : tarifa.getTarifaIss2001())
-                            .issMultiplier(req.getIssMultiplier() != null ? req.getIssMultiplier() : BigDecimal.ONE)
+                            .baseTariff(req.getBaseTariff() != null
+                                    ? req.getBaseTariff() : tarifa.getTarifaIss2001())
+                            .issMultiplier(req.getIssMultiplier() != null
+                                    ? req.getIssMultiplier() : BigDecimal.ONE)
+                            .esPyd(tarifa.getEsPyd() != null ? tarifa.getEsPyd() : false)
                             .status("PENDIENTE_RECAUDO")
                             .orderDate(req.getOrderDate() != null ? req.getOrderDate() : LocalDate.now())
                             .orderNotes(req.getOrderNotes())
@@ -79,7 +86,8 @@ public class MedicalOrderService {
                 .map(this::toResponse);
     }
 
-    private Mono<MedicalOrderResponse> enrichWithLiquidacion(MedicalOrder order, String regimen, String categoria) {
+    private Mono<MedicalOrderResponse> enrichWithLiquidacion(
+            MedicalOrder order, String regimen, String rolAfiliado, String categoria) {
         if (regimen == null || categoria == null) {
             return Mono.just(toResponse(order));
         }
@@ -87,13 +95,21 @@ public class MedicalOrderService {
                 order.getCupsCode(),
                 order.getServiceType(),
                 regimen,
+                rolAfiliado != null ? rolAfiliado : "COTIZANTE",
                 categoria,
-                order.getBaseTariff()
+                order.getBaseTariff(),
+                order.getEsPyd() != null && order.getEsPyd(),
+                null,
+                order.getPatientId(),
+                order.getOrderDate()
         ).map(liq -> {
             MedicalOrderResponse resp = toResponse(order);
             resp.setCuotaModeradora(liq.getCuotaModeradora());
             resp.setDescuentoConvenio(liq.getDescuentoConvenio());
             resp.setValorACobrar(liq.getValorACobrar());
+            resp.setTipoCobro(liq.getTipoCobro());
+            resp.setAlertaTopeEvento(liq.getAlertaTopeEvento());
+            resp.setAlertaTopeAnual(liq.getAlertaTopeAnual());
             return resp;
         });
     }
@@ -104,12 +120,14 @@ public class MedicalOrderService {
                 .patientId(o.getPatientId())
                 .professionalId(o.getProfessionalId())
                 .appointmentId(o.getAppointmentId())
+                .episodioId(o.getEpisodioId())
                 .cupsCode(o.getCupsCode())
                 .cupsDescription(o.getCupsDescription())
                 .serviceType(o.getServiceType())
                 .ambito(o.getAmbito())
                 .baseTariff(o.getBaseTariff())
                 .issMultiplier(o.getIssMultiplier())
+                .esPyd(o.getEsPyd())
                 .status(o.getStatus())
                 .orderDate(o.getOrderDate())
                 .orderNotes(o.getOrderNotes())

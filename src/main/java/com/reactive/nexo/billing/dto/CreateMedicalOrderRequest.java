@@ -17,6 +17,7 @@ public class CreateMedicalOrderRequest {
     private Long professionalId;
 
     private Long appointmentId;
+    private String episodioId;   // del Contrato A
 
     @NotBlank
     private String cupsCode;
@@ -25,19 +26,13 @@ public class CreateMedicalOrderRequest {
     private String cupsDescription;
 
     @NotBlank
-    private String serviceType; // CONSULTA, PROCEDIMIENTO, LABORATORIO, IMAGEN, MEDICAMENTO, OTRO
+    private String serviceType;
 
-    private String ambito = "AMBULATORIO";
-
+    private String ambito;
     private BigDecimal baseTariff;
-
     private BigDecimal issMultiplier;
-
     private LocalDate orderDate;
-
     private String orderNotes;
-
     private String diagnosisCode;
-
     private String diagnosisDesc;
 }

@@ -8,6 +8,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
+import java.math.BigDecimal;
+
 @RestController
 @RequestMapping("/api/v1/billing/recaudos")
 @RequiredArgsConstructor
@@ -16,8 +18,8 @@ public class RecaudoController {
     private final RecaudoService recaudoService;
 
     /**
-     * Lista paginada de recaudos con filtros.
-     * GET /api/v1/billing/recaudos?page=0&size=10&status=CONFIRMADO&cajeroId=1
+     * Lista paginada con filtros.
+     * GET /api/v1/billing/recaudos?status=SALDADO&cajeroId=1
      */
     @GetMapping
     public Mono<PagedResponse<RecaudoResponse>> findAll(
@@ -30,25 +32,19 @@ public class RecaudoController {
         return recaudoService.findAll(page, size, status, cajeroId, patientId, search);
     }
 
-    /**
-     * Obtiene un recaudo por ID con sus ítems.
-     */
     @GetMapping("/{id}")
     public Mono<RecaudoResponse> getById(@PathVariable Long id) {
         return recaudoService.getById(id);
     }
 
-    /**
-     * Obtiene un recaudo por número de comprobante.
-     */
     @GetMapping("/comprobante/{numero}")
     public Mono<RecaudoResponse> getByComprobante(@PathVariable String numero) {
         return recaudoService.getByComprobante(numero);
     }
 
     /**
-     * Crea un recaudo en estado BORRADOR.
-     * El frontend crea el borrador al llegar al paso de liquidación.
+     * Crea recaudo en estado PENDIENTE (o NO_APLICA si es exento).
+     * El Contrato B se publica al outbox al confirmar, no al crear.
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -57,8 +53,8 @@ public class RecaudoController {
     }
 
     /**
-     * Confirma el recaudo (Paso 4: Pago).
-     * Cambia estado a CONFIRMADO y marca órdenes como RECAUDADO.
+     * Confirma el pago completo: PENDIENTE/PARCIAL → SALDADO.
+     * Publica el Contrato B al outbox transaccional.
      */
     @PostMapping("/{id}/confirmar")
     public Mono<RecaudoResponse> confirmar(
@@ -68,7 +64,18 @@ public class RecaudoController {
     }
 
     /**
-     * Anula un recaudo. Revierte órdenes a PENDIENTE_RECAUDO.
+     * Registra pago parcial: PENDIENTE → PARCIAL.
+     */
+    @PostMapping("/{id}/pago-parcial")
+    public Mono<RecaudoResponse> pagoParcial(
+            @PathVariable Long id,
+            @RequestParam BigDecimal valorParcial) {
+        return recaudoService.registrarPagoParcial(id, valorParcial);
+    }
+
+    /**
+     * Anula un recaudo (soft delete + trazabilidad).
+     * Requiere motivo y empleado que anula (RN-11).
      */
     @PostMapping("/{id}/anular")
     public Mono<RecaudoResponse> anular(

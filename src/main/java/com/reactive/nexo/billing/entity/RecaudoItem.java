@@ -61,11 +61,20 @@ public class RecaudoItem {
     @Column("copago")
     private BigDecimal copago;
 
+    @Column("tope_evento_aplicado")
+    private Boolean topeEventoAplicado;
+
+    @Column("tope_anual_aplicado")
+    private Boolean topeAnualAplicado;
+
     @Column("valor_cobrado")
     private BigDecimal valorCobrado;
 
     @Column("exento")
     private Boolean exento;
+
+    @Column("exencion_codigo")
+    private String exencionCodigo;
 
     @Column("created_at")
     private LocalDateTime createdAt;

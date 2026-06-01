@@ -7,28 +7,46 @@ import com.reactive.nexo.billing.repository.MedicalOrderRepository;
 import com.reactive.nexo.billing.repository.RecaudoItemRepository;
 import com.reactive.nexo.billing.repository.RecaudoRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * Servicio de Recaudo — NexoSalud HIS.
+ *
+ * Máquina de estados (sección 4 del spec):
+ *   PENDIENTE → PARCIAL → SALDADO → ANULADO (con reverso autorizado)
+ *   PENDIENTE → NO_APLICA (exentos / tercero pagador)
+ *   PENDIENTE → ANULADO
+ *
+ * Contrato B v2.0: se publica al outbox en la misma operación que confirma el comprobante.
+ */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class RecaudoService {
 
     private final RecaudoRepository recaudoRepository;
     private final RecaudoItemRepository itemRepository;
     private final MedicalOrderRepository orderRepository;
+    private final ContratoBOutboxService outboxService;
     private final DatabaseClient databaseClient;
 
+    // ─── Crear recaudo (estado PENDIENTE) ────────────────────────────────────
+
     /**
-     * Crea un recaudo en estado BORRADOR con sus ítems.
+     * Crea un recaudo en estado PENDIENTE con sus ítems.
+     * Para exentos crea directamente en NO_APLICA.
      * Marca las órdenes médicas como EN_RECAUDO.
      */
     public Mono<RecaudoResponse> create(CreateRecaudoRequest req) {
@@ -38,19 +56,39 @@ public class RecaudoService {
                             .map(i -> i.getValorCobrado() != null ? i.getValorCobrado() : BigDecimal.ZERO)
                             .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+                    // Exentos → NO_APLICA directamente (RN-15)
+                    boolean esExento = "exento".equalsIgnoreCase(req.getTipoCobro())
+                            || (req.getExencionCodigo() != null && !req.getExencionCodigo().isBlank());
+                    String statusInicial = esExento ? "NO_APLICA" : "PENDIENTE";
+
                     Recaudo recaudo = Recaudo.builder()
                             .numeroComprobante(numero)
+                            .eventoId(UUID.randomUUID())
+                            .episodioId(req.getEpisodioId())
+                            .corrigeComprobanteId(req.getCorrigeComprobanteId())
+                            .contratoVersion("2.0")
                             .patientId(req.getPatientId())
                             .cajeroId(req.getCajeroId())
                             .sedeId(req.getSedeId())
+                            .epsId(req.getEpsId())
                             .epsNombre(req.getEpsNombre())
                             .regimen(req.getRegimen())
-                            .status("BORRADOR")
+                            .rolAfiliado(req.getRolAfiliado())
+                            .categoriaIbc(req.getCategoriaIbc())
+                            .tipoServicio(req.getTipoServicio())
+                            .numeroAutorizacion(req.getNumeroAutorizacion())
+                            .esPyd(req.getEsPyd() != null ? req.getEsPyd() : false)
+                            .exencionCodigo(req.getExencionCodigo())
+                            .tipoCobro(req.getTipoCobro())
+                            .status(statusInicial)
                             .medioPago(req.getMedioPago())
                             .valorTotal(total)
                             .valorRecibido(req.getValorRecibido())
                             .cambio(req.getValorRecibido() != null ? req.getValorRecibido().subtract(total) : null)
+                            .comprobanteInmutable(true)
                             .observaciones(req.getObservaciones())
+                            .fechaAtencion(req.getFechaAtencion() != null ? req.getFechaAtencion() : LocalDate.now())
+                            .fechaEmisionEvento(LocalDateTime.now())
                             .createdAt(LocalDateTime.now())
                             .updatedAt(LocalDateTime.now())
                             .build();
@@ -59,20 +97,31 @@ public class RecaudoService {
                 })
                 .flatMap(saved -> saveItems(saved.getId(), req.getItems())
                         .then(markOrdersInRecaudo(req.getItems()))
+                        .then(Mono.defer(() -> {
+                            // Exentos publican Contrato B inmediatamente (B cero explícito)
+                            if ("NO_APLICA".equals(saved.getStatus())) {
+                                return outboxService.publicar(saved).then();
+                            }
+                            return Mono.empty();
+                        }))
                         .then(buildResponse(saved)));
     }
 
+    // ─── Confirmar pago (PENDIENTE/PARCIAL → SALDADO) ────────────────────────
+
     /**
-     * Confirma el recaudo: cambia estado a CONFIRMADO y marca órdenes como RECAUDADO.
+     * Confirma el pago completo. Publica el Contrato B al outbox.
+     * Actualiza acumulado anual de copago si aplica.
      */
     public Mono<RecaudoResponse> confirmar(Long id, ConfirmarRecaudoRequest req) {
         return recaudoRepository.findById(id)
                 .switchIfEmpty(Mono.error(new RuntimeException("Recaudo no encontrado")))
                 .flatMap(recaudo -> {
-                    if (!"BORRADOR".equals(recaudo.getStatus())) {
-                        return Mono.error(new RuntimeException("Solo se pueden confirmar recaudos en estado BORRADOR"));
+                    if (!"PENDIENTE".equals(recaudo.getStatus()) && !"PARCIAL".equals(recaudo.getStatus())) {
+                        return Mono.error(new RuntimeException(
+                                "Solo se pueden confirmar recaudos en estado PENDIENTE o PARCIAL"));
                     }
-                    recaudo.setStatus("CONFIRMADO");
+                    recaudo.setStatus("SALDADO");
                     recaudo.setMedioPago(req.getMedioPago());
                     recaudo.setValorRecibido(req.getValorRecibido());
                     recaudo.setCambio(req.getValorRecibido().subtract(recaudo.getValorTotal()));
@@ -81,12 +130,36 @@ public class RecaudoService {
                     recaudo.setUpdatedAt(LocalDateTime.now());
                     return recaudoRepository.save(recaudo);
                 })
-                .flatMap(saved -> markOrdersRecaudado(saved.getId())
+                .flatMap(saved ->
+                        markOrdersRecaudado(saved.getId())
+                        .then(actualizarAcumuladoCopago(saved))
+                        .then(outboxService.publicar(saved))  // Contrato B al outbox
                         .then(buildResponse(saved)));
     }
 
+    // ─── Pago parcial (PENDIENTE → PARCIAL) ──────────────────────────────────
+
+    public Mono<RecaudoResponse> registrarPagoParcial(Long id, BigDecimal valorParcial) {
+        return recaudoRepository.findById(id)
+                .switchIfEmpty(Mono.error(new RuntimeException("Recaudo no encontrado")))
+                .flatMap(recaudo -> {
+                    if (!"PENDIENTE".equals(recaudo.getStatus())) {
+                        return Mono.error(new RuntimeException("Solo se puede registrar pago parcial en estado PENDIENTE"));
+                    }
+                    recaudo.setStatus("PARCIAL");
+                    recaudo.setValorRecibido(valorParcial);
+                    recaudo.setUpdatedAt(LocalDateTime.now());
+                    return recaudoRepository.save(recaudo);
+                })
+                .flatMap(this::buildResponse);
+    }
+
+    // ─── Anular (SALDADO/PENDIENTE → ANULADO) ────────────────────────────────
+
     /**
-     * Anula un recaudo confirmado. Revierte las órdenes a PENDIENTE_RECAUDO.
+     * Anula un recaudo. Soft delete — nunca se borra el registro original (RN-15).
+     * Revierte órdenes a PENDIENTE_RECAUDO.
+     * Si había copago acumulado, lo descuenta del acumulado anual.
      */
     public Mono<RecaudoResponse> anular(Long id, Long anuladoPor, String motivo) {
         return recaudoRepository.findById(id)
@@ -102,9 +175,13 @@ public class RecaudoService {
                     recaudo.setUpdatedAt(LocalDateTime.now());
                     return recaudoRepository.save(recaudo);
                 })
-                .flatMap(saved -> revertOrdersToPending(saved.getId())
+                .flatMap(saved ->
+                        revertOrdersToPending(saved.getId())
+                        .then(revertirAcumuladoCopago(saved))
                         .then(buildResponse(saved)));
     }
+
+    // ─── Consultas ────────────────────────────────────────────────────────────
 
     public Mono<RecaudoResponse> getById(Long id) {
         return recaudoRepository.findById(id)
@@ -118,14 +195,10 @@ public class RecaudoService {
                 .flatMap(this::buildResponse);
     }
 
-    /**
-     * Lista paginada de recaudos con filtros.
-     */
     public Mono<PagedResponse<RecaudoResponse>> findAll(int page, int size,
                                                          String status, Long cajeroId,
                                                          Long patientId, String search) {
-        StringBuilder sql = new StringBuilder(
-                "SELECT r.* FROM recaudos r WHERE 1=1");
+        StringBuilder sql = new StringBuilder("SELECT r.* FROM recaudos r WHERE 1=1");
         if (status != null && !status.isBlank()) sql.append(" AND r.status = :status");
         if (cajeroId != null) sql.append(" AND r.cajero_id = :cajeroId");
         if (patientId != null) sql.append(" AND r.patient_id = :patientId");
@@ -145,7 +218,6 @@ public class RecaudoService {
         if (cajeroId != null) { exec = exec.bind("cajeroId", cajeroId); count = count.bind("cajeroId", cajeroId); }
         if (patientId != null) { exec = exec.bind("patientId", patientId); count = count.bind("patientId", patientId); }
         if (search != null && !search.isBlank()) { exec = exec.bind("search", "%" + search + "%"); count = count.bind("search", "%" + search + "%"); }
-
         exec = exec.bind("size", size).bind("offset", (long) page * size);
 
         Flux<RecaudoResponse> content = exec.map((row, meta) -> mapRowToRecaudo(row)).all()
@@ -167,7 +239,9 @@ public class RecaudoService {
         ).map(t -> {
             BigDecimal total = t.getT1();
             long txns = t.getT2();
-            BigDecimal promedio = txns > 0 ? total.divide(BigDecimal.valueOf(txns), 0, java.math.RoundingMode.HALF_UP) : BigDecimal.ZERO;
+            BigDecimal promedio = txns > 0
+                    ? total.divide(BigDecimal.valueOf(txns), 0, java.math.RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
             return DashboardStatsResponse.builder()
                     .totalRecaudadoHoy(total)
                     .transaccionesHoy(txns)
@@ -177,7 +251,44 @@ public class RecaudoService {
         });
     }
 
-    // ─── Helpers ────────────────────────────────────────────────────────────────
+    // ─── Acumulado anual de copago (RN-06/07) ────────────────────────────────
+
+    private Mono<Void> actualizarAcumuladoCopago(Recaudo recaudo) {
+        if (!"copago".equalsIgnoreCase(recaudo.getTipoCobro())
+                || recaudo.getValorTotal() == null
+                || recaudo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+            return Mono.empty();
+        }
+        int anio = (recaudo.getFechaAtencion() != null ? recaudo.getFechaAtencion() : LocalDate.now()).getYear();
+        String upsert = "INSERT INTO acumulado_copago_anual (patient_id, anio, total_copago, updated_at) " +
+                "VALUES (:patientId, :anio, :valor, NOW()) " +
+                "ON CONFLICT (patient_id, anio) DO UPDATE " +
+                "SET total_copago = acumulado_copago_anual.total_copago + :valor, updated_at = NOW()";
+        return databaseClient.sql(upsert)
+                .bind("patientId", recaudo.getPatientId())
+                .bind("anio", anio)
+                .bind("valor", recaudo.getValorTotal())
+                .fetch().rowsUpdated().then();
+    }
+
+    private Mono<Void> revertirAcumuladoCopago(Recaudo recaudo) {
+        if (!"copago".equalsIgnoreCase(recaudo.getTipoCobro())
+                || recaudo.getValorTotal() == null
+                || recaudo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+            return Mono.empty();
+        }
+        int anio = (recaudo.getFechaAtencion() != null ? recaudo.getFechaAtencion() : LocalDate.now()).getYear();
+        String update = "UPDATE acumulado_copago_anual " +
+                "SET total_copago = GREATEST(0, total_copago - :valor), updated_at = NOW() " +
+                "WHERE patient_id = :patientId AND anio = :anio";
+        return databaseClient.sql(update)
+                .bind("patientId", recaudo.getPatientId())
+                .bind("anio", anio)
+                .bind("valor", recaudo.getValorTotal())
+                .fetch().rowsUpdated().then();
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private Mono<String> generateNumeroComprobante() {
         return recaudoRepository.nextSequence()
@@ -214,7 +325,11 @@ public class RecaudoService {
         return Flux.fromIterable(items)
                 .filter(i -> i.getMedicalOrderId() != null)
                 .flatMap(i -> orderRepository.findById(i.getMedicalOrderId())
-                        .flatMap(o -> { o.setStatus("EN_RECAUDO"); o.setUpdatedAt(LocalDateTime.now()); return orderRepository.save(o); }))
+                        .flatMap(o -> {
+                            o.setStatus("EN_RECAUDO");
+                            o.setUpdatedAt(LocalDateTime.now());
+                            return orderRepository.save(o);
+                        }))
                 .then();
     }
 
@@ -222,7 +337,11 @@ public class RecaudoService {
         return itemRepository.findByRecaudoId(recaudoId)
                 .filter(i -> i.getMedicalOrderId() != null)
                 .flatMap(i -> orderRepository.findById(i.getMedicalOrderId())
-                        .flatMap(o -> { o.setStatus("RECAUDADO"); o.setUpdatedAt(LocalDateTime.now()); return orderRepository.save(o); }))
+                        .flatMap(o -> {
+                            o.setStatus("RECAUDADO");
+                            o.setUpdatedAt(LocalDateTime.now());
+                            return orderRepository.save(o);
+                        }))
                 .then();
     }
 
@@ -230,7 +349,11 @@ public class RecaudoService {
         return itemRepository.findByRecaudoId(recaudoId)
                 .filter(i -> i.getMedicalOrderId() != null)
                 .flatMap(i -> orderRepository.findById(i.getMedicalOrderId())
-                        .flatMap(o -> { o.setStatus("PENDIENTE_RECAUDO"); o.setUpdatedAt(LocalDateTime.now()); return orderRepository.save(o); }))
+                        .flatMap(o -> {
+                            o.setStatus("PENDIENTE_RECAUDO");
+                            o.setUpdatedAt(LocalDateTime.now());
+                            return orderRepository.save(o);
+                        }))
                 .then();
     }
 
@@ -241,17 +364,31 @@ public class RecaudoService {
                 .map(items -> RecaudoResponse.builder()
                         .id(r.getId())
                         .numeroComprobante(r.getNumeroComprobante())
+                        .eventoId(r.getEventoId())
+                        .episodioId(r.getEpisodioId())
+                        .corrigeComprobanteId(r.getCorrigeComprobanteId())
+                        .contratoVersion(r.getContratoVersion())
                         .patientId(r.getPatientId())
                         .cajeroId(r.getCajeroId())
                         .sedeId(r.getSedeId())
+                        .epsId(r.getEpsId())
                         .epsNombre(r.getEpsNombre())
                         .regimen(r.getRegimen())
+                        .rolAfiliado(r.getRolAfiliado())
+                        .categoriaIbc(r.getCategoriaIbc())
+                        .tipoServicio(r.getTipoServicio())
+                        .numeroAutorizacion(r.getNumeroAutorizacion())
+                        .esPyd(r.getEsPyd())
+                        .exencionCodigo(r.getExencionCodigo())
+                        .tipoCobro(r.getTipoCobro())
                         .status(r.getStatus())
                         .medioPago(r.getMedioPago())
                         .valorTotal(r.getValorTotal())
                         .valorRecibido(r.getValorRecibido())
                         .cambio(r.getCambio())
+                        .comprobanteInmutable(r.getComprobanteInmutable())
                         .observaciones(r.getObservaciones())
+                        .fechaAtencion(r.getFechaAtencion())
                         .confirmadoAt(r.getConfirmadoAt())
                         .createdAt(r.getCreatedAt())
                         .items(items)
@@ -284,11 +421,15 @@ public class RecaudoService {
         return Recaudo.builder()
                 .id(row.get("id", Long.class))
                 .numeroComprobante(row.get("numero_comprobante", String.class))
+                .episodioId(row.get("episodio_id", String.class))
                 .patientId(row.get("patient_id", Long.class))
                 .cajeroId(row.get("cajero_id", Long.class))
                 .sedeId(row.get("sede_id", Long.class))
+                .epsId(row.get("eps_id", String.class))
                 .epsNombre(row.get("eps_nombre", String.class))
                 .regimen(row.get("regimen", String.class))
+                .rolAfiliado(row.get("rol_afiliado", String.class))
+                .tipoCobro(row.get("tipo_cobro", String.class))
                 .status(row.get("status", String.class))
                 .medioPago(row.get("medio_pago", String.class))
                 .valorTotal(row.get("valor_total", BigDecimal.class))

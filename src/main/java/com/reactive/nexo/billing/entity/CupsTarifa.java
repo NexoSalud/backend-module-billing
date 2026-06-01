@@ -39,6 +39,9 @@ public class CupsTarifa {
     @Column("unidad_medida")
     private String unidadMedida;
 
+    @Column("es_pyd")
+    private Boolean esPyd;
+
     @Column("activo")
     private Boolean activo;
 

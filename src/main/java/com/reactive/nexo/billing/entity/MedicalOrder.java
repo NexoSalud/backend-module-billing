@@ -28,6 +28,9 @@ public class MedicalOrder {
     @Column("appointment_id")
     private Long appointmentId;
 
+    @Column("episodio_id")
+    private String episodioId;
+
     @Column("cups_code")
     private String cupsCode;
 
@@ -45,6 +48,9 @@ public class MedicalOrder {
 
     @Column("iss_multiplier")
     private BigDecimal issMultiplier;
+
+    @Column("es_pyd")
+    private Boolean esPyd;
 
     @Column("status")
     private String status;

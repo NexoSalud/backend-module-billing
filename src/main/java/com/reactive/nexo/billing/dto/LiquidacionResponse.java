@@ -3,11 +3,10 @@ package com.reactive.nexo.billing.dto;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.util.List;
 
 /**
- * Respuesta de liquidación automática para un servicio.
- * Calcula cuota moderadora según Acuerdo 260/2004 CRES.
+ * Respuesta de liquidación automática.
+ * Implementa lógica de cobro v2.1 — Contrato B NexoSalud HIS.
  */
 @Data
 @Builder
@@ -24,7 +23,11 @@ public class LiquidacionResponse {
     private BigDecimal valorACobrar;
     private String regimen;
     private String categoria;
-    private String normativaAplicada; // Ej: "Acuerdo 260/2004 CRES"
+    private String tipoCobro;           // cuota_moderadora | copago | particular | exento
+    private String normativaAplicada;
     private boolean exento;
     private String motivoExencion;
+    // Alertas para el cajero (RN-06)
+    private Boolean alertaTopeEvento;
+    private Boolean alertaTopeAnual;
 }

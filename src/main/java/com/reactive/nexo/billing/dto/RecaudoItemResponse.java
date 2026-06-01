@@ -27,4 +27,7 @@ public class RecaudoItemResponse {
     private BigDecimal copago;
     private BigDecimal valorCobrado;
     private Boolean exento;
+    private String exencionCodigo;
+    private Boolean topeEventoAplicado;
+    private Boolean topeAnualAplicado;
 }

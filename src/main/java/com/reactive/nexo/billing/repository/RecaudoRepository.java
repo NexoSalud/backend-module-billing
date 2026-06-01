@@ -12,19 +12,13 @@ public interface RecaudoRepository extends ReactiveCrudRepository<Recaudo, Long>
 
     Mono<Recaudo> findByNumeroComprobante(String numeroComprobante);
 
-    @Query("SELECT * FROM recaudos WHERE cajero_id = :cajeroId ORDER BY created_at DESC LIMIT :size OFFSET :offset")
-    Flux<Recaudo> findByCajeroId(Long cajeroId, int size, long offset);
-
-    @Query("SELECT COUNT(*) FROM recaudos WHERE 1=1" +
-           " AND (:status IS NULL OR status = :status)" +
-           " AND (:cajeroId IS NULL OR cajero_id = :cajeroId)" +
-           " AND (:patientId IS NULL OR patient_id = :patientId)")
-    Mono<Long> countFiltered(String status, Long cajeroId, Long patientId);
-
-    @Query("SELECT COALESCE(SUM(valor_total),0) FROM recaudos WHERE status = 'CONFIRMADO' AND DATE(created_at) = CURRENT_DATE")
+    // Estadísticas del dashboard — estados SALDADO y NO_APLICA son "cobrados"
+    @Query("SELECT COALESCE(SUM(valor_total),0) FROM recaudos " +
+           "WHERE status IN ('SALDADO','NO_APLICA') AND DATE(created_at) = CURRENT_DATE")
     Mono<java.math.BigDecimal> sumTodayConfirmed();
 
-    @Query("SELECT COUNT(*) FROM recaudos WHERE status = 'CONFIRMADO' AND DATE(created_at) = CURRENT_DATE")
+    @Query("SELECT COUNT(*) FROM recaudos " +
+           "WHERE status IN ('SALDADO','NO_APLICA') AND DATE(created_at) = CURRENT_DATE")
     Mono<Long> countTodayConfirmed();
 
     @Query("SELECT COUNT(*) FROM recaudos WHERE status = 'ANULADO' AND DATE(created_at) = CURRENT_DATE")
@@ -32,4 +26,9 @@ public interface RecaudoRepository extends ReactiveCrudRepository<Recaudo, Long>
 
     @Query("SELECT nextval('recaudo_seq')")
     Mono<Long> nextSequence();
+
+    // Validación unicidad Contrato B: un episodio_id solo puede tener un evento B no-correctivo
+    @Query("SELECT COUNT(*) FROM recaudos WHERE episodio_id = :episodioId " +
+           "AND status NOT IN ('ANULADO') AND corrige_comprobante_id IS NULL")
+    Mono<Long> countActiveByEpisodioId(String episodioId);
 }
