@@ -50,7 +50,18 @@ public class RecaudoService {
      * Marca las órdenes médicas como EN_RECAUDO.
      */
     public Mono<RecaudoResponse> create(CreateRecaudoRequest req) {
-        return generateNumeroComprobante()
+        // Validación: un episodio_id solo puede tener un evento B no-correctivo (spec sección 8)
+        Mono<Void> validacionEpisodio = (req.getEpisodioId() != null
+                && req.getCorrigeComprobanteId() == null)
+                ? recaudoRepository.countActiveByEpisodioId(req.getEpisodioId())
+                        .flatMap(count -> count > 0
+                                ? Mono.error(new RuntimeException(
+                                        "El episodio " + req.getEpisodioId()
+                                        + " ya tiene un evento B activo. Un servicio nuevo requiere un episodio nuevo."))
+                                : Mono.empty())
+                : Mono.empty();
+
+        return validacionEpisodio.then(generateNumeroComprobante())
                 .flatMap(numero -> {
                     BigDecimal total = req.getItems().stream()
                             .map(i -> i.getValorCobrado() != null ? i.getValorCobrado() : BigDecimal.ZERO)
@@ -316,6 +327,9 @@ public class RecaudoService {
                 .copago(i.getCopago() != null ? i.getCopago() : BigDecimal.ZERO)
                 .valorCobrado(i.getValorCobrado() != null ? i.getValorCobrado() : BigDecimal.ZERO)
                 .exento(i.getExento() != null ? i.getExento() : false)
+                .exencionCodigo(i.getExencionCodigo())
+                .topeEventoAplicado(i.getTopeEventoAplicado() != null ? i.getTopeEventoAplicado() : false)
+                .topeAnualAplicado(i.getTopeAnualAplicado() != null ? i.getTopeAnualAplicado() : false)
                 .createdAt(LocalDateTime.now())
                 .build()).collect(Collectors.toList());
         return itemRepository.saveAll(entities).then();
@@ -414,6 +428,9 @@ public class RecaudoService {
                 .copago(i.getCopago())
                 .valorCobrado(i.getValorCobrado())
                 .exento(i.getExento())
+                .exencionCodigo(i.getExencionCodigo())
+                .topeEventoAplicado(i.getTopeEventoAplicado())
+                .topeAnualAplicado(i.getTopeAnualAplicado())
                 .build();
     }
 
@@ -436,6 +453,7 @@ public class RecaudoService {
                 .valorRecibido(row.get("valor_recibido", BigDecimal.class))
                 .cambio(row.get("cambio", BigDecimal.class))
                 .observaciones(row.get("observaciones", String.class))
+                .fechaAtencion(row.get("fecha_atencion", LocalDate.class))
                 .confirmadoAt(row.get("confirmado_at", LocalDateTime.class))
                 .createdAt(row.get("created_at", LocalDateTime.class))
                 .build();

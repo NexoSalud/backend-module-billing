@@ -135,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_acumulado_patient_anio ON acumulado_copago_anual(
 CREATE TABLE IF NOT EXISTS contrato_b_outbox (
     id                      SERIAL PRIMARY KEY,
     evento_id               UUID NOT NULL UNIQUE,           -- idempotencia
-    episodio_id             VARCHAR(50) NOT NULL,
+    episodio_id             VARCHAR(50),                    -- null si el recaudo no tiene episodio (ej: particular sin admisión)
     recaudo_id              BIGINT NOT NULL,
     payload                 JSONB NOT NULL,                 -- Contrato B completo
     status                  VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',

@@ -42,7 +42,7 @@ public class ContratoBOutboxService {
 
             ContratoBOutbox outbox = ContratoBOutbox.builder()
                     .eventoId(evento.getEventoId())
-                    .episodioId(recaudo.getEpisodioId())
+                    .episodioId(recaudo.getEpisodioId() != null ? recaudo.getEpisodioId() : "SIN_EPISODIO")
                     .recaudoId(recaudo.getId())
                     .payload(payload)
                     .status("PENDIENTE")
