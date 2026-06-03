@@ -262,8 +262,9 @@ CREATE TABLE IF NOT EXISTS medical_orders (
 
 CREATE INDEX IF NOT EXISTS idx_medical_orders_patient    ON medical_orders(patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_medical_orders_status     ON medical_orders(status);
-CREATE INDEX IF NOT EXISTS idx_medical_orders_appointment ON medical_orders(appointment_id);
-CREATE INDEX IF NOT EXISTS idx_medical_orders_episodio   ON medical_orders(episodio_id);
+-- Nota: idx_medical_orders_appointment e idx_medical_orders_episodio se crean
+-- en el bloque de migraciones al final, después del ALTER TABLE que garantiza
+-- que las columnas existen en BD ya desplegadas.
 
 -- ─── Tarifas CUPS ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS cups_tarifas (
@@ -285,3 +286,15 @@ CREATE INDEX IF NOT EXISTS idx_cups_descripcion ON cups_tarifas(descripcion);
 
 -- ─── Secuencia para numeración fiscal de comprobantes ────────────────────────
 CREATE SEQUENCE IF NOT EXISTS recaudo_seq START 1 INCREMENT 1;
+
+-- ─── Migraciones idempotentes (columnas añadidas después del despliegue inicial) ─
+-- Estas sentencias son seguras de re-ejecutar: no hacen nada si la columna ya existe.
+ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS episodio_id      VARCHAR(50);
+ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS appointment_id   BIGINT;
+ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS diagnosis_code   VARCHAR(10);
+ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS diagnosis_desc   VARCHAR(500);
+ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS order_notes      TEXT;
+
+-- Recrear índices que dependen de las columnas nuevas (IF NOT EXISTS los hace idempotentes)
+CREATE INDEX IF NOT EXISTS idx_medical_orders_episodio    ON medical_orders(episodio_id);
+CREATE INDEX IF NOT EXISTS idx_medical_orders_appointment ON medical_orders(appointment_id);
