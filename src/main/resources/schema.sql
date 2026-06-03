@@ -6,6 +6,17 @@
 -- Contrato B v2.0 — Recaudo → Facturación
 -- ============================================================
 
+-- ─── Pre-migraciones: añadir columnas nuevas a tablas ya existentes en BD ────
+-- Deben ejecutarse ANTES de cualquier CREATE TABLE o INSERT para que sean
+-- idempotentes tanto en despliegues frescos como en actualizaciones.
+ALTER TABLE IF EXISTS cuotas_moderadoras  ADD COLUMN IF NOT EXISTS valor_uvb      NUMERIC(10,4);
+ALTER TABLE IF EXISTS topes_copago        ADD COLUMN IF NOT EXISTS valor_uvb      NUMERIC(10,4) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS medical_orders      ADD COLUMN IF NOT EXISTS episodio_id    VARCHAR(50);
+ALTER TABLE IF EXISTS medical_orders      ADD COLUMN IF NOT EXISTS appointment_id BIGINT;
+ALTER TABLE IF EXISTS medical_orders      ADD COLUMN IF NOT EXISTS diagnosis_code VARCHAR(10);
+ALTER TABLE IF EXISTS medical_orders      ADD COLUMN IF NOT EXISTS diagnosis_desc VARCHAR(500);
+ALTER TABLE IF EXISTS medical_orders      ADD COLUMN IF NOT EXISTS order_notes    TEXT;
+
 -- ─── UVB vigente (Circular Externa 048/2025, Res. 3488/2025) ─────────────────
 -- Indexación obligatoria desde 01-ene-2026
 CREATE TABLE IF NOT EXISTS uvb_vigente (
@@ -289,12 +300,20 @@ CREATE SEQUENCE IF NOT EXISTS recaudo_seq START 1 INCREMENT 1;
 
 -- ─── Migraciones idempotentes (columnas añadidas después del despliegue inicial) ─
 -- Estas sentencias son seguras de re-ejecutar: no hacen nada si la columna ya existe.
+
+-- medical_orders: columnas añadidas en v2
 ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS episodio_id      VARCHAR(50);
 ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS appointment_id   BIGINT;
 ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS diagnosis_code   VARCHAR(10);
 ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS diagnosis_desc   VARCHAR(500);
 ALTER TABLE medical_orders ADD COLUMN IF NOT EXISTS order_notes      TEXT;
 
--- Recrear índices que dependen de las columnas nuevas (IF NOT EXISTS los hace idempotentes)
+-- cuotas_moderadoras: columna valor_uvb añadida en v2 (indexación UVB Circular 048/2025)
+ALTER TABLE cuotas_moderadoras ADD COLUMN IF NOT EXISTS valor_uvb NUMERIC(10,4);
+
+-- topes_copago: columna valor_uvb añadida en v2
+ALTER TABLE topes_copago ADD COLUMN IF NOT EXISTS valor_uvb NUMERIC(10,4) NOT NULL DEFAULT 0;
+
+-- Recrear índices que dependen de columnas nuevas (IF NOT EXISTS los hace idempotentes)
 CREATE INDEX IF NOT EXISTS idx_medical_orders_episodio    ON medical_orders(episodio_id);
 CREATE INDEX IF NOT EXISTS idx_medical_orders_appointment ON medical_orders(appointment_id);

@@ -7,8 +7,7 @@ spring:
     password: ${SPRING_R2DBC_PASSWORD:postgres}
   sql:
     init:
-      mode: always
-      schema-locations: classpath:schema.sql
+      mode: never
 
 server:
   port: ${BILLING_PORT:8087}
