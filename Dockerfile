@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jdk-jammy
+FROM eclipse-temurin:17-jre
 
 RUN apt-get update && apt-get install -y maven && rm -rf /var/lib/apt/lists/*
 
